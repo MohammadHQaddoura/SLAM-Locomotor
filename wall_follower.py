@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 
 #----------------------------------------------------------------
-#   File to perform wall following using PD control
+#   wallfollower.py 		Version 1.?
 #
-#   TODO: Complete the desired sections and
-#           fix any issues in the code
+#   --- This module runs a continuous controller loop to provide correction
+#   --- to a wall following rallycar. It controls distance and
+#   --- parallelism to a wall.
+#   ---
+#   --- 04//2024 Initial coding. Copied from Voyles.
+#   --- 04/	/2024 
+#   --- 04/ /2024 
 #---------------------------------------------------------------
 
 import numpy as np
@@ -21,12 +26,20 @@ from std_msgs.msg import Float32
 import serial
 
 class WallFollower:
+    
     def __init__(self):
-        self.lwall_dist = 1.5
-        self.diagonal_dist = 1
-        self.front_dist = 10
-        self.rwall_dist = 1.5
-        self.des_dist = 1
+    # __init__(self)
+    #
+    # This function initializes all values for the wall follower class.
+    #
+    # self - the object created as part of the class, called with any class function
+    #
+      
+        self.lwall_dist = 1.5 # LiDAR frame's distance from the left wall
+        self.diagonal_dist = 1 # 
+        self.front_dist = 10 # 
+        self.rwall_dist = 1.5 # LiDAR frame's distance from the right wall
+        self.des_dist = 1 # Desired distance, this is a constant for PD
         
         # velocities to send
         self.steer = 0.0
@@ -52,39 +65,49 @@ class WallFollower:
         self.dq = deque([0,0,0,0,0])
         
 
-    def laser_cb(self, msg):
-        # Compute the distance to left and right walls
-        #   using the data in msg. Does not use any hard-coded values       
-        rangeCount = len(msg.ranges) #1081
-        #print("range count: ", rangeCount)
-        centerIndex = rangeCount // 2
-        angleIncrement = msg.angle_increment * 180/np.pi
-        # print(angleIncrement)
-        indexOffset = round(90 / angleIncrement)
-        # print(indexOffset)
-        diagonalOffset = round(45 / angleIncrement)
-        # print(diagonalOffset)
+    def Laser_cb(self, msg):
+        # Laser_cb(self, msg)
+        #
+        # Laser_CB computes collects the lidar data from the point 90 DEG offset from
+        # the +X axis facing left and the lidar data 45 DEG offset from the +X axis facing 
+        # forward and to the left. It does so by collecting the indicies of the data points
+        # then using those indicies to find the actual values from the lidar data.
+        #
+        # msg - Message data from the lidar node
+        # self - the object created as part of the class, called with any class function
         
-        leftIndex = centerIndex + indexOffset
+        rangeCount = len(msg.ranges) # Determine the amount of laser scans performed
+        centerIndex = rangeCount // 2 #This is the data point that corresponds with the +X axis
+        angleIncrement = msg.angle_increment * 180/np.pi #Convert increment data from rad to deg
+        #Determin the amount of indicies to that correspond with 90 DEG offset and the 45 DEG offset
+        indexOffset = round(90 / angleIncrement) 
+        diagonalOffset = round(45 / angleIncrement)
+        #Add index offsets to the center value to find left and diagonal indicies.
+        leftIndex = centerIndex + indexOffset 
         diagonalIndex = centerIndex + diagonalOffset
-        #rightIndex = centerIndex - indexOffset
-        # print(rightIndex)
-    
-    # These values are computed in control_loop
+    		#Find the value of each datapoint based on the indices
         self.lwall_dist = msg.ranges[leftIndex]
         self.diagonal_dist = msg.ranges[diagonalIndex]
         self.front_dist = msg.ranges[centerIndex]
-	
-        #print("Left Dist:", self.lwall_dist) 
 
-    def control_loop(self, freq=40):
+    def Control_loop(self, freq=40):
+   			# Control_loop(self, freq)   
+        #
+        # Runs a continuous loop at a frequency of 40 Hz. A subscriber is made to read distance data from
+        # the LiDAR mounted on a rallycar. Two publishers are created to give feedback to the rallycar's
+        # motor and control velocity. The value that controls the motor's forward velocity is then adjusted
+        # based on the error between the desired distance from the wall and the LiDAR's reading. In order to
+        # control the parallelism of the car to the wall, an equation which finds the error from a previous position of the car
+        # to a current position of the car, measured by the distance perpendicular to the LiDAR and the distance
+        # 45 degrees from the LiDAR. The distances can be used to find the current angle and compare it to the desired angle.
+        #
+				# freq - control loop frequency (Reccomended Range : [30,100])
+        # self - the object created as part of the class, called with any class function
+
+      
         r = rospy.Rate(freq)
-        self.deltaT = 1 / freq
-        # TODO: Implement PD control to follow left wall
-        #   at desired distance of 1.5m, i.e. stay 1.5m 
-        #       from left wall always
-        
-        rospy.Subscriber("scan", LaserScan, self.laser_cb)
+        self.deltaT = 1 / freq        
+        rospy.Subscriber("scan", LaserScan, self.Laser_cb)
         self.accel_pub = rospy.Publisher('/accelerator_cmd', Float32, queue_size=10)
         self.steer_pub = rospy.Publisher('/steering_cmd', Float32, queue_size=10)
             
@@ -98,15 +121,10 @@ class WallFollower:
             # Set error and error rates
             self.prev_err = self.err
             self.err = CD - self.des_dist # Set error based on distance from wall/angle
-            #print("error: ", self.err)
-            #self.err_rate = (self.err - self.prev_err) / self.deltaT
             self.dq.append(self.err)
             self.dq.popleft()
             self.err_rate = sum(self.dq)/(self.deltaT*5) 
-            #print("DQ: ", self.dq)
-            
-            
-            #print("Error Rate: ", self.err_rate)
+
             # Update the desired angular velocity using PD
             self.steer = (self.kp*self.err + self.kd*self.err_rate)
             print("KP Impact: ", self.kp * self.err)
@@ -115,24 +133,19 @@ class WallFollower:
             	self.steer = -2047
             if (self.steer > 2047):
             	self.steer = 2047
-            #self.steer = 0
-            #print("steer val ", self.steer)   
-            # TODO: Set gas vel
             self.gasvel = self.des_vel.linear.x
-            #print("gas vel:",self.gasvel)
             if (self.front_dist < 0.4):
                 self.gasvel = 0
                  
                 print("Too close")
-            # TODO: publish steering and gas to topics
+                
             self.accel_pub.publish(Float32(self.gasvel))
             self.steer_pub.publish(Float32(self.steer))
 
             # Move robot
             r.sleep()
 
-    def clean_shutdown(self):
-        # TODO: Publish zero velocities to all topics
+    def Clean_shutdown(self):
         accel_pub = rospy.Publisher("/accelerator_cmd", Float32, queue_size=10)
         steer_pub = rospy.Publisher("/steering_cmd", Float32, queue_size=10)
         
@@ -144,8 +157,7 @@ if __name__=="__main__":
 
     try:
         x = WallFollower()
-        x.control_loop()
+        x.Control_loop()
     except rospy.ROSInterruptException:
-        x.clean_shutdown()
-        print("shutdown")
+        x.Clean_shutdown()
         pass
